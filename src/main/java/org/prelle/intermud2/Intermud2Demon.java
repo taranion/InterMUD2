@@ -229,6 +229,7 @@ public class Intermud2Demon {
 		case "ping_q" -> handlePingQuery(mess);
 		case "mudlist_a" -> handleMudlistAnswer(mess);
 		case "mudlist_q" -> handleMudListQuery(mess);
+		case "rwho_a"    -> handleRWhoAnswer(mess);
 		default -> {
 			logger.log(Level.INFO, "Unhandled message ''{0}''", mess.command);
 			System.exit(1);
@@ -249,7 +250,7 @@ public class Intermud2Demon {
 		contact.setMudGroup(mess.getMUDGroup());
 		contact.setMudLib(mess.getMUDLib());
 		contact.setVersion(mess.getVersion());
-		logger.log(Level.DEBUG, "Set known contact "+key+" to "+contact);
+		//logger.log(Level.DEBUG, "Set known contact "+key+" to "+contact);
 		knownContacts.put(key, contact);
 		
 		if (callback!=null) {
@@ -263,6 +264,15 @@ public class Intermud2Demon {
 	private Intermud2Contact getByName(String name) {
 		for (Intermud2Contact tmp : knownContacts.values()) {
 			if (tmp.getName().equals(name))
+				return tmp;
+		}
+		return null;
+	}
+
+	//-------------------------------------------------------------------
+	private Intermud2Contact getByIPOnly(InetAddress addr) {
+		for (Intermud2Contact tmp : knownContacts.values()) {
+			if (tmp.getIpAddress().equals(addr))
 				return tmp;
 		}
 		return null;
@@ -321,7 +331,7 @@ public class Intermud2Demon {
 
 	//-------------------------------------------------------------------
 	private void handlePingAnswer(I2Message mess) {
-		logger.log(Level.DEBUG, "Received answer for ping");
+		logger.log(Level.TRACE, "Received answer for ping");
 		Intermud2Contact contact = updateContact(mess);
 		contact.setLastContact(LocalDateTime.now());
 		if (contact.getState()==ContactState.OFFLINE || contact.getState()==ContactState.UNKNOWN) {
@@ -348,13 +358,12 @@ public class Intermud2Demon {
 		String line = "@@@ping_a"
 				+generateInfoString()
 				+"@@@";
-			logger.log(Level.INFO, "Send: "+line);
 		sendReady(mess.sender(), mess.getUdpPort(), line);
 	}
 
 	//-------------------------------------------------------------------
 	private void handleMudlistAnswer(I2Message mess) {
-		logger.log(Level.DEBUG, "Received answer for mudlist: "+mess);
+		logger.log(Level.TRACE, "Received answer for mudlist");
 		if (mess.parameter.containsKey("PORTUDP")) {
 			String key = mess.sender.getHostAddress()+"/"+mess.getUdpPort();
 			Intermud2Contact contact = knownContacts.getOrDefault(key, new Intermud2Contact(mess.sender, mess.getUdpPort()));
@@ -372,6 +381,15 @@ public class Intermud2Demon {
 					contact.getServices().add(Service.MUDLIST);
 				}
 			}
+		} else if (mess.parameter.containsKey("NAME")) {
+			Intermud2Contact contact = getByIPOnly(mess.sender);
+			if (contact!=null) {
+				contact.setLastContact(LocalDateTime.now());
+				contact.setState(ContactState.SCANNED);
+				if (!contact.getServices().contains(Service.MUDLIST)) {
+					contact.getServices().add(Service.MUDLIST);
+				}
+			}
 		}
 		
 		for (Entry<String,String> entry: mess.parameter.entrySet()) {
@@ -382,8 +400,34 @@ public class Intermud2Demon {
 				//logger.log(Level.DEBUG, "Parsed index "+index+": "+subParams);
 				updateContact(subParams);
 			} catch (NumberFormatException e) {
+				logger.log(Level.DEBUG, "Extra parameter in mudlist_a from {0}: {1}={2}", mess.sender, entry.getKey(), entry.getValue());
 			}
 		}
+	}
+
+	//-------------------------------------------------------------------
+	private void handleRWhoAnswer(I2Message mess) {
+		logger.log(Level.DEBUG, "Received answer for rwho: "+mess);
+		if (mess.parameter.containsKey("PORTUDP")) {
+			String key = mess.sender.getHostAddress()+"/"+mess.getUdpPort();
+			Intermud2Contact contact = knownContacts.getOrDefault(key, new Intermud2Contact(mess.sender, mess.getUdpPort()));
+			contact.setLastContact(LocalDateTime.now());
+			if (!contact.getServices().contains(Service.RWHO)) {
+				contact.getServices().add(Service.RWHO);
+			}
+		} else if (mess.parameter.containsKey("NAME")) {
+			Intermud2Contact contact = getByName(mess.parameter.get("NAME"));
+			if (contact!=null) {
+				contact.setLastContact(LocalDateTime.now());
+				if (!contact.getServices().contains(Service.RWHO)) {
+					contact.getServices().add(Service.RWHO);
+				}
+			}
+		}
+		
+		String pinkFishColorString = mess.parameter.get("RWHO");
+		System.out.println(PinkfishColor.decodetoANSI(pinkFishColorString));
+		System.out.println("\u001b[0m;");
 	}
 
 	//-------------------------------------------------------------------
@@ -420,7 +464,6 @@ public class Intermud2Demon {
 		String line = "@@@startup"
 				+generateInfoString()
 				+"@@@";
-			logger.log(Level.INFO, "Send: "+line);
 			sendReady(bootstrapServer, line);
 	}
 
@@ -472,7 +515,7 @@ public class Intermud2Demon {
 			PrintWriter out = new PrintWriter(new FileWriter(config.getExportTo().toFile()));
 			List<Intermud2Contact> toWrite = new ArrayList<>(knownContacts.values());
 			Collections.sort(toWrite);
-//			toWrite = toWrite.stream().filter(co -> co.getState()!=ContactState.UNKNOWN).toList();
+			toWrite = toWrite.stream().filter(co -> co.getState()!=ContactState.UNKNOWN).toList();
 			
 			toWrite.forEach(mud -> out.format("%20s \t|%15s \t|%d \t|%s|%s|%s | %s #%s\r\n",
 					mud.getName(),
@@ -486,7 +529,7 @@ public class Intermud2Demon {
 					));
 			out.flush();
 			out.close();
-			logger.log(Level.DEBUG, "Wrote {0} hosts to {1}", knownContacts.size(), config.getExportTo().toAbsolutePath());
+			logger.log(Level.DEBUG, "Wrote {0} hosts to {1}", toWrite.size(), config.getExportTo().toAbsolutePath());
 			Duration dur = Duration.between(before, Instant.now());
 			logger.log(Level.DEBUG, "Took "+dur.toSeconds());
 		} catch (IOException e) {
@@ -547,7 +590,7 @@ public class Intermud2Demon {
 		for (Intermud2Contact cont : allHosts) {
 			if (cont.getState()==ContactState.ONLINE || cont.getState()==ContactState.SCANNED) {
 				try {
-					Duration last = Duration.between(cont.getLastContact(), LocalTime.now());
+					Duration last = Duration.between(cont.getLastContact(), LocalDateTime.now());
 					if (last.toMinutes()>40) {
 						// MUD seems offline
 						cont.setState(ContactState.OFFLINE);
@@ -611,7 +654,7 @@ public class Intermud2Demon {
 			return null;
 		data = data.substring(3);
 		data = data.substring(0, data.length()-3);
-		logger.log(Level.DEBUG, "really parse: <<<"+data+">>>");
+		//logger.log(Level.DEBUG, "really parse: <<<"+data+">>>");
 		String[] params = data.split("\\|\\|");
 		String command = params[0];
 		Map<String,String> ret = new HashMap<>();
